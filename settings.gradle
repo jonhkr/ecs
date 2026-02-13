@@ -1,0 +1,5 @@
+rootProject.name = 'ecs'
+include 'ecs-api'
+include 'ecs-in-memory'
+include 'ecs-id'
+include 'ecs-mysql'
