@@ -32,6 +32,34 @@ public class MysqlRegistry<D> implements Registry<D> {
             FROM RankedComponents
             WHERE rn = 1""";
 
+    private final static String FIND_BY_UNIQUE_KEY_QUERY = """
+            WITH TargetEntity AS (
+                SELECT entity_id
+                FROM component
+                WHERE system_id = ?
+                  AND type_and_data_hash = ?
+                  AND unique_flag = 1
+                LIMIT 1
+            ),
+                RankedComponents AS (
+                SELECT
+                    id,
+                    entity_id,
+                    type,
+                    data,
+                    created_at,
+                    unique_flag,
+                    ROW_NUMBER() OVER(PARTITION BY type ORDER BY version DESC) as rn
+                FROM component
+                WHERE system_id = ?
+                  AND entity_id = (SELECT entity_id from TargetEntity)
+                  %s
+            )
+            SELECT
+                id, entity_id, type, data, created_at, unique_flag
+            FROM RankedComponents
+            WHERE rn = 1""";
+
     private final static String TABLE_NAME = "component";
 
     private final ComponentSystem<D> system;
@@ -120,6 +148,7 @@ public class MysqlRegistry<D> implements Registry<D> {
     public Optional<Entity<D>> execute(Query.SingletonQuery<D> query) {
         return switch (query) {
             case Query.SingletonQuery.ByEntityIdQuery<D> q -> find(q);
+            case Query.SingletonQuery.ByUniqueKey<D> q -> find(q);
         };
     }
 
@@ -151,6 +180,46 @@ public class MysqlRegistry<D> implements Registry<D> {
             }
             if (!componentList.isEmpty()) {
                 return Optional.of(new Entity<>(query.id(), Collections.unmodifiableList(componentList)));
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+
+        return Optional.empty();
+    }
+
+    private Optional<Entity<D>> find(Query.SingletonQuery.ByUniqueKey<D> query) {
+        List<Integer> typeIds = system.mapper().resolveTypes(query.selectedTypes());
+        boolean hasTypes = !typeIds.isEmpty();
+        String typePlaceholder = hasTypes
+                ? "AND type IN (" + String.join(",", Collections.nCopies(typeIds.size(), "?")) + ")"
+                : "";
+        var componentList = new ArrayList<Component<D>>();
+        var systemId = Byte.toUnsignedInt(system.id().value());
+        var typeAndData = system.mapper().map(query.keyData());
+        var hash = hash(typeAndData);
+        try (var stmt = dataSource.getConnection().prepareStatement(FIND_BY_UNIQUE_KEY_QUERY.formatted(typePlaceholder))) {
+            int paramIdx = 1;
+            stmt.setInt(paramIdx++, systemId);
+            stmt.setBytes(paramIdx++, hash);
+            stmt.setInt(paramIdx++, systemId);
+            for (Integer typeId : typeIds) {
+                stmt.setInt(paramIdx++, typeId);
+            }
+            var result = stmt.executeQuery();
+            while (result.next()) {
+                var id = result.getBytes("id");
+                var entityId = result.getBytes("entity_id");
+                var type = result.getInt("type");
+                var data = result.getString("data");
+                var dataObj = system.mapper().map(new TypeAndData(type, data));
+                var _createdAt = result.getTimestamp("created_at");
+                var uniqueFlag = result.getByte("unique_flag");
+                var component = new Component<>(new IdImpl(id), new IdImpl(entityId), dataObj, uniqueFlag == 1);
+                componentList.add(component);
+            }
+            if (!componentList.isEmpty()) {
+                return Optional.of(new Entity<>(componentList.getFirst().entityId(), Collections.unmodifiableList(componentList)));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);

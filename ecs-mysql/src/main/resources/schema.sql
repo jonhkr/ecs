@@ -19,11 +19,38 @@ create table component (
     partition system2 values in (2)
 );
 
+explain
+WITH TargetEntity AS (
+    SELECT entity_id
+    FROM component
+    WHERE system_id = ?
+      AND type_and_data_hash = ?
+      AND unique_flag = 1
+    LIMIT 1
+),
+    RankedComponents AS (
+    SELECT
+        id,
+        entity_id,
+        type,
+        data,
+        created_at,
+        unique_flag,
+        ROW_NUMBER() OVER(PARTITION BY type ORDER BY version DESC) as rn
+    FROM component
+    WHERE system_id = ?
+      AND entity_id = (SELECT entity_id from TargetEntity)
+)
+SELECT
+    id, entity_id, type, data, created_at, unique_flag
+FROM RankedComponents
+WHERE rn = 1;
+
 alter table component add partition (partition system3 values in (3));
 
 drop table component;
 
-select * from component;
+select system_id, hex(type_and_data_hash) from component;
 # truncate component;
 
 explain select id, entity_id, type, data, created_at, unique_flag from component where system_id = 1 AND entity_id = unhex('019c85f0d3897c468d10a9f0e3ddb237');

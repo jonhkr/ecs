@@ -48,7 +48,18 @@ public class ApiTest {
         assertTrue(keyComponent.isPresent());
         assertEquals(idempotencyKey, keyComponent.get().data().key);
 
-//        var result = registry.execute(Query.withData(new TestSystem.IdempotencyKey(idempotencyKey)));
+        var result3 = registry.execute(Query.byUniqueKey(new SystemData.IdempotencyKey(idempotencyKey)));
+        assertTrue(result3.isPresent());
+        var entity3 = result3.get();
+        assertEquals(2, entity3.componentList().size());
+        component = entity3.getComponent(SystemData.TestData.class);
+        assertTrue(component.isPresent());
+        assertEquals("test", component.get().data().stringer);
+        assertEquals(111, component.get().data().inter);
+
+        keyComponent = entity3.getComponent(SystemData.IdempotencyKey.class);
+        assertTrue(keyComponent.isPresent());
+        assertEquals(idempotencyKey, keyComponent.get().data().key);
     }
 
     sealed interface SystemData {
