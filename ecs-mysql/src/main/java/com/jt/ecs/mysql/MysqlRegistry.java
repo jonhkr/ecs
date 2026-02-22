@@ -11,12 +11,9 @@ import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
 import java.time.Clock;
 import java.time.ZonedDateTime;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
-public class MysqlRegistry<D> implements Registry<D, ComponentSystem<D>> {
+public class MysqlRegistry<D> implements Registry<D> {
     private final static String FIND_BY_ENTITY_ID_QUERY = """
             WITH RankedComponents AS (
                 SELECT
@@ -28,7 +25,7 @@ public class MysqlRegistry<D> implements Registry<D, ComponentSystem<D>> {
                     unique_flag,
                     ROW_NUMBER() OVER(PARTITION BY type ORDER BY version DESC) as rn
                 FROM component
-                WHERE system_id = ? AND entity_id = ?
+                WHERE system_id = ? AND entity_id = ? %s
             )
             SELECT
                 id, entity_id, type, data, created_at, unique_flag
@@ -39,16 +36,14 @@ public class MysqlRegistry<D> implements Registry<D, ComponentSystem<D>> {
 
     private final ComponentSystem<D> system;
     private final DataSource dataSource;
-    private final DataMapper<D> dataMapper;
 
-    public MysqlRegistry(ComponentSystem<D> system, DataSource dataSource, DataMapper<D> dataMapper) {
+    public MysqlRegistry(ComponentSystem<D> system, DataSource dataSource) {
         this.system = system;
         this.dataSource = dataSource;
-        this.dataMapper = dataMapper;
     }
 
     private Map<String, ValueWithType> intoRow(Component<D> component) {
-        var typeAndData = dataMapper.map(component.data());
+        var typeAndData = system.mapper().map(component.data());
         var uniqueFlag = component.unique()
                 ? new ValueWithType(1, JDBCType.TINYINT)
                 : ValueWithType.NULL;
@@ -122,27 +117,36 @@ public class MysqlRegistry<D> implements Registry<D, ComponentSystem<D>> {
     }
 
     @Override
-    public Optional<Entity<D>> execute(Query.SingletonQuery query) {
+    public Optional<Entity<D>> execute(Query.SingletonQuery<D> query) {
         return switch (query) {
-            case Query.SingletonQuery.ByEntityIdQuery q -> find(q);
+            case Query.SingletonQuery.ByEntityIdQuery<D> q -> find(q);
         };
     }
 
-    private Optional<Entity<D>> find(Query.SingletonQuery.ByEntityIdQuery query) {
+    private Optional<Entity<D>> find(Query.SingletonQuery.ByEntityIdQuery<D> query) {
+        List<Integer> typeIds = system.mapper().resolveTypes(query.selectedTypes());
+        boolean hasTypes = !typeIds.isEmpty();
+        String typePlaceholder = hasTypes
+                ? "AND type IN (" + String.join(",", Collections.nCopies(typeIds.size(), "?")) + ")"
+                : "";
         var componentList = new ArrayList<Component<D>>();
-        try (var stmt = dataSource.getConnection().prepareStatement(FIND_BY_ENTITY_ID_QUERY)) {
-            stmt.setInt(1, Byte.toUnsignedInt(system.id().value()));
-            stmt.setBytes(2, query.id().bytes());
+        try (var stmt = dataSource.getConnection().prepareStatement(FIND_BY_ENTITY_ID_QUERY.formatted(typePlaceholder))) {
+            int paramIdx = 1;
+            stmt.setInt(paramIdx++, Byte.toUnsignedInt(system.id().value()));
+            stmt.setBytes(paramIdx++, query.id().bytes());
+            for (Integer typeId : typeIds) {
+                stmt.setInt(paramIdx++, typeId);
+            }
             var result = stmt.executeQuery();
             while (result.next()) {
                 var id = result.getBytes("id");
                 var entityId = result.getBytes("entity_id");
                 var type = result.getInt("type");
                 var data = result.getString("data");
-                var dataObj = dataMapper.map(new TypeAndData(type, data));
+                var dataObj = system.mapper().map(new TypeAndData(type, data));
                 var _createdAt = result.getTimestamp("created_at");
                 var uniqueFlag = result.getByte("unique_flag");
-                var component = new Component<D>(new IdImpl(id), new IdImpl(entityId), dataObj, uniqueFlag == 1);
+                var component = new Component<>(new IdImpl(id), new IdImpl(entityId), dataObj, uniqueFlag == 1);
                 componentList.add(component);
             }
             if (!componentList.isEmpty()) {

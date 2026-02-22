@@ -1,6 +1,7 @@
 package com.jt.ecs.api;
 
 import com.jt.ecs.id.UniqueId;
+import com.jt.ecs.mysql.ComponentSystem;
 import com.jt.ecs.mysql.DataMapper;
 import com.jt.ecs.mysql.MysqlRegistry;
 import com.jt.ecs.mysql.TypeAndData;
@@ -8,11 +9,10 @@ import com.mysql.cj.jdbc.MysqlDataSource;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
+import java.util.stream.Collectors;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class ApiTest {
 
@@ -25,7 +25,7 @@ public class ApiTest {
         dataSource.setPassword("root");
         dataSource.setDatabaseName("ecs");
 
-        var registry = new MysqlRegistry<>(SystemData.SYSTEM, dataSource, new Mapper());
+        var registry = new MysqlRegistry<>(SystemData.SYSTEM, dataSource);
         var entityId = UniqueId.generate();
         var idempotencyKey = UUID.randomUUID().toString();
         registry.execute(new TestTransaction(entityId, idempotencyKey, "test", 111));
@@ -39,11 +39,20 @@ public class ApiTest {
         assertEquals("test", component.get().data().stringer);
         assertEquals(111, component.get().data().inter);
 
+        var result2 = registry.execute(Query.byEntityId(entityId, List.of(SystemData.IdempotencyKey.class)));
+        assertTrue(result2.isPresent());
+        var entity2 = result2.get();
+        assertEquals(1, entity2.componentList().size());
+        assertTrue(entity2.getComponent(SystemData.TestData.class).isEmpty());
+        var keyComponent = entity.getComponent(SystemData.IdempotencyKey.class);
+        assertTrue(keyComponent.isPresent());
+        assertEquals(idempotencyKey, keyComponent.get().data().key);
+
 //        var result = registry.execute(Query.withData(new TestSystem.IdempotencyKey(idempotencyKey)));
     }
 
     sealed interface SystemData {
-        ComponentSystem<SystemData> SYSTEM = new ComponentSystem<>(new SystemId((byte) 1));
+        ComponentSystem<SystemData> SYSTEM = new ComponentSystem<>(new com.jt.ecs.mysql.SystemId((byte) 1), new Mapper());
 
         record TestData(String stringer, int inter)
                 implements SystemData {
@@ -56,21 +65,53 @@ public class ApiTest {
     static class Mapper implements DataMapper<SystemData> {
         private final ObjectMapper mapper = new ObjectMapper();
 
+        enum SystemDataType {
+            TEST_DATA(1, SystemData.TestData.class),
+            IDEMPOTENCY_KEY(2, SystemData.IdempotencyKey.class);
+
+            private final int id;
+            private final Class<? extends SystemData> clazz;
+
+            SystemDataType(int id, Class<? extends SystemData> clazz) {
+                this.id = id;
+                this.clazz = clazz;
+            }
+
+            private static final Map<Integer, SystemDataType> BY_ID =
+                    Arrays.stream(values()).collect(Collectors.toMap(e -> e.id, e -> e));
+
+            private static final Map<Class<?>, SystemDataType> BY_CLASS =
+                    Arrays.stream(values()).collect(Collectors.toMap(e -> e.clazz, e -> e));
+
+            public static SystemDataType fromId(int id) {
+                return Optional.ofNullable(BY_ID.get(id))
+                        .orElseThrow(() -> new IllegalArgumentException("Unknown type ID: " + id));
+            }
+
+            public static SystemDataType fromClass(Class<?> clazz) {
+                return Optional.ofNullable(BY_CLASS.get(clazz))
+                        .orElseThrow(() -> new IllegalArgumentException("Unsupported class: " + clazz));
+            }
+        }
+
         @Override
         public TypeAndData map(SystemData data) {
-            return switch (data) {
-                case SystemData.TestData c -> new TypeAndData(1, mapper.writeValueAsString(c));
-                case SystemData.IdempotencyKey c -> new TypeAndData(2, mapper.writeValueAsString(c));
-            };
+            var type = SystemDataType.fromClass(data.getClass());
+            return new TypeAndData(type.id, mapper.writeValueAsString(data));
         }
 
         @Override
         public SystemData map(TypeAndData data) {
-            return switch (data.type()) {
-                case 1 -> mapper.readValue(data.data(), SystemData.TestData.class);
-                case 2 -> mapper.readValue(data.data(), SystemData.IdempotencyKey.class);
-                default -> throw new IllegalArgumentException("Invalid data type: " + data.type());
-            };
+            var type = SystemDataType.fromId(data.type());
+            return mapper.readValue(data.data(), type.clazz);
+        }
+
+        @Override
+        public List<Integer> resolveTypes(List<Class<? extends SystemData>> classes) {
+            return classes.stream()
+                    .map(SystemDataType::fromClass)
+                    .map(t -> t.id)
+                    .toList();
         }
     }
 

@@ -4,7 +4,7 @@ import com.jt.ecs.api.*;
 
 import java.util.Optional;
 
-public class InMemoryRegistry<D> implements Registry<D, ComponentSystem<D>> {
+public class InMemoryRegistry<D> implements Registry<D> {
 
     @Override
     public void execute(Transaction<D> transaction) {
@@ -13,7 +13,7 @@ public class InMemoryRegistry<D> implements Registry<D, ComponentSystem<D>> {
     }
 
     @Override
-    public Optional<Entity<D>> execute(Query.SingletonQuery query) {
+    public Optional<Entity<D>> execute(Query.SingletonQuery<D> query) {
         return Optional.empty();
     }
 }

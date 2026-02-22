@@ -5,13 +5,13 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.*;
 
-public record Insert(String sql, List<ValueWithType> values) {
+record Insert(String sql, List<ValueWithType> values) {
 
     public static Builder of(String tableName) {
         return new Builder(tableName);
     }
 
-    public PreparedStatement prepare(Connection conn) throws SQLException {
+    PreparedStatement prepare(Connection conn) throws SQLException {
         var stmt = conn.prepareStatement(sql);
         for (int i = 1; i <= values.size(); i++) {
             var value = values.get(i - 1);
@@ -20,7 +20,7 @@ public record Insert(String sql, List<ValueWithType> values) {
         return stmt;
     }
 
-    public static class Builder {
+    static class Builder {
         private final String tableName;
         private List<Map<String, ValueWithType>> rows;
 
@@ -37,7 +37,7 @@ public record Insert(String sql, List<ValueWithType> values) {
             return "`" + string + "`";
         }
 
-        public Insert build() {
+        Insert build() {
             var columns = new TreeSet<String>();
             var values = new ArrayList<ValueWithType>();
             for (var row : rows) {
