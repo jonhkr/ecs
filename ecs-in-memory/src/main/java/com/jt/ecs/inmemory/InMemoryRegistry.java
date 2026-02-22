@@ -1,22 +1,19 @@
 package com.jt.ecs.inmemory;
 
-import com.jt.ecs.api.Entity;
-import com.jt.ecs.api.Query;
-import com.jt.ecs.api.Registry;
-import com.jt.ecs.api.Transaction;
+import com.jt.ecs.api.*;
 
 import java.util.Optional;
 
-public class InMemoryRegistry<T> implements Registry<T> {
+public class InMemoryRegistry<D> implements Registry<D, ComponentSystem<D>> {
 
     @Override
-    public void execute(Transaction<T> transaction) {
+    public void execute(Transaction<D> transaction) {
         var components = transaction.execute();
         components.forEach(System.out::println);
     }
 
     @Override
-    public Optional<Entity<T>> execute(Query.SingletonQuery query) {
+    public Optional<Entity<D>> execute(Query.SingletonQuery query) {
         return Optional.empty();
     }
 }

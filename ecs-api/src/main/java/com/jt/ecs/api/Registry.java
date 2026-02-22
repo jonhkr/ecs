@@ -2,7 +2,7 @@ package com.jt.ecs.api;
 
 import java.util.Optional;
 
-public interface Registry<T> {
-    void execute(Transaction<T> transaction);
-    Optional<Entity<T>> execute(Query.SingletonQuery query);
+public interface Registry<D, T extends ComponentSystem<D>> {
+    void execute(Transaction<D> transaction);
+    Optional<Entity<D>> execute(Query.SingletonQuery query);
 }

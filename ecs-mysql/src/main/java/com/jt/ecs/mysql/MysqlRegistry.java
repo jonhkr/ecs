@@ -11,20 +11,43 @@ import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
 import java.time.Clock;
 import java.time.ZonedDateTime;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Optional;
 
-public class MysqlRegistry<T> implements Registry<T> {
+public class MysqlRegistry<D> implements Registry<D, ComponentSystem<D>> {
+    private final static String FIND_BY_ENTITY_ID_QUERY = """
+            WITH RankedComponents AS (
+                SELECT
+                    id,
+                    entity_id,
+                    type,
+                    data,
+                    created_at,
+                    unique_flag,
+                    ROW_NUMBER() OVER(PARTITION BY type ORDER BY version DESC) as rn
+                FROM component
+                WHERE system_id = ? AND entity_id = ?
+            )
+            SELECT
+                id, entity_id, type, data, created_at, unique_flag
+            FROM RankedComponents
+            WHERE rn = 1""";
+
     private final static String TABLE_NAME = "component";
 
+    private final ComponentSystem<D> system;
     private final DataSource dataSource;
-    private final DataMapper<T> dataMapper;
+    private final DataMapper<D> dataMapper;
 
-    public MysqlRegistry(DataSource dataSource, DataMapper<T> dataMapper) {
+    public MysqlRegistry(ComponentSystem<D> system, DataSource dataSource, DataMapper<D> dataMapper) {
+        this.system = system;
         this.dataSource = dataSource;
         this.dataMapper = dataMapper;
     }
 
-    private Map<String, ValueWithType> intoRow(Component<T> component) {
+    private Map<String, ValueWithType> intoRow(Component<D> component) {
         var typeAndData = dataMapper.map(component.data());
         var uniqueFlag = component.unique()
                 ? new ValueWithType(1, JDBCType.TINYINT)
@@ -32,10 +55,12 @@ public class MysqlRegistry<T> implements Registry<T> {
         var typeAndDataHash = hash(typeAndData);
 
         return Map.of(
+                "system_id", new ValueWithType(Byte.toUnsignedInt(system.id().value()), JDBCType.TINYINT),
                 "id", new ValueWithType(component.id().bytes(), JDBCType.BINARY),
                 "entity_id", new ValueWithType(component.entityId().bytes(), JDBCType.BINARY),
                 "type", new ValueWithType(typeAndData.type(), JDBCType.SMALLINT),
                 "data", new ValueWithType(typeAndData.data(), JDBCType.LONGNVARCHAR),
+                "version", new ValueWithType(0, JDBCType.INTEGER),
                 "created_at", new ValueWithType(ZonedDateTime.now(Clock.systemUTC()), JDBCType.TIMESTAMP),
                 "type_and_data_hash", new ValueWithType(typeAndDataHash, JDBCType.BINARY),
                 "unique_flag", uniqueFlag
@@ -53,7 +78,7 @@ public class MysqlRegistry<T> implements Registry<T> {
     }
 
     @Override
-    public void execute(Transaction<T> transaction) {
+    public void execute(Transaction<D> transaction) {
         try (var conn = dataSource.getConnection()) {
             conn.setAutoCommit(false);
 
@@ -97,20 +122,19 @@ public class MysqlRegistry<T> implements Registry<T> {
     }
 
     @Override
-    public Optional<Entity<T>> execute(Query.SingletonQuery query) {
+    public Optional<Entity<D>> execute(Query.SingletonQuery query) {
         return switch (query) {
             case Query.SingletonQuery.ByEntityIdQuery q -> find(q);
         };
     }
 
-    private Optional<Entity<T>> find(Query.SingletonQuery.ByEntityIdQuery query) {
-        var sql = "select id, entity_id, type, data, created_at, unique_flag from component where entity_id = ?";
-
-        var componentList = new ArrayList<Component<T>>();
-        try (var stmt = dataSource.getConnection().prepareStatement(sql)) {
-            stmt.setBytes(1, query.id().bytes());
+    private Optional<Entity<D>> find(Query.SingletonQuery.ByEntityIdQuery query) {
+        var componentList = new ArrayList<Component<D>>();
+        try (var stmt = dataSource.getConnection().prepareStatement(FIND_BY_ENTITY_ID_QUERY)) {
+            stmt.setInt(1, Byte.toUnsignedInt(system.id().value()));
+            stmt.setBytes(2, query.id().bytes());
             var result = stmt.executeQuery();
-            if (result.next()) {
+            while (result.next()) {
                 var id = result.getBytes("id");
                 var entityId = result.getBytes("entity_id");
                 var type = result.getInt("type");
@@ -118,11 +142,11 @@ public class MysqlRegistry<T> implements Registry<T> {
                 var dataObj = dataMapper.map(new TypeAndData(type, data));
                 var _createdAt = result.getTimestamp("created_at");
                 var uniqueFlag = result.getByte("unique_flag");
-                var component = new Component<T>(new IdImpl(id), new IdImpl(entityId), dataObj, uniqueFlag == 1);
+                var component = new Component<D>(new IdImpl(id), new IdImpl(entityId), dataObj, uniqueFlag == 1);
                 componentList.add(component);
             }
             if (!componentList.isEmpty()) {
-                return Optional.of(new Entity<T>(query.id(), Collections.unmodifiableList(componentList)));
+                return Optional.of(new Entity<>(query.id(), Collections.unmodifiableList(componentList)));
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
